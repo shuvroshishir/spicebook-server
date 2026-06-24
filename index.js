@@ -69,7 +69,7 @@ async function run() {
     try {
         // await client.connect();
 
-        const db = client.db("petora");
+        const db = client.db(process.env.MONGO_DB_NAME);
         const petsCollection = db.collection("pets");
         const adoptionsCollection = db.collection("adoptions");
 
