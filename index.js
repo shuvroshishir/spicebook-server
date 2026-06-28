@@ -74,7 +74,7 @@ async function run() {
 
         const db = client.db(process.env.MONGO_DB_NAME);
         const recipesCollection = db.collection("recipes");
-
+        const favoritesCollection = db.collection("favorites");
 
 
         // Public endpoint to get featured recipes with pagination
@@ -108,7 +108,7 @@ async function run() {
         app.get('/recipes/popular', async (req, res) => {
             try {
                 const limit = parseInt(req.query.limit) || 9;
-                
+
                 const recipes = await recipesCollection.find({})
                     .sort({ likesCount: -1 })
                     .limit(limit)
@@ -209,6 +209,56 @@ async function run() {
             }
         );
 
+        // Get user's favorites
+        app.get('/recipes/favorites', middleware, async (req, res) => {
+            try {
+                const userId = req.user.id || req.user.sub || req.user.uid || "";
+                const userEmail = req.user.email || "";
+
+                if (!userId && !userEmail) {
+                    return res.json([]);
+                }
+
+                const query = {};
+                const orConditions = [];
+                if (userId) orConditions.push({ userId });
+                if (userEmail) orConditions.push({ userEmail });
+                query.$or = orConditions;
+
+                const favCollection = db.collection("favorites");
+                const result = await favCollection.find(query).toArray();
+                res.json(result);
+            } catch (error) {
+                console.error("Error fetching favorites:", error);
+                res.status(500).json({ error: "Failed to fetch favorite recipes" });
+            }
+        });
+
+        // Get user's purchased recipes
+        app.get('/recipes/purchased', middleware, async (req, res) => {
+            try {
+                const userId = req.user.id || req.user.sub || req.user.uid || "";
+                const userEmail = req.user.email || "";
+
+                if (!userId && !userEmail) {
+                    return res.json([]);
+                }
+
+                const query = {};
+                const orConditions = [];
+                if (userId) orConditions.push({ userId });
+                if (userEmail) orConditions.push({ userEmail });
+                query.$or = orConditions;
+
+                const purCollection = db.collection("purchases");
+                const result = await purCollection.find(query).toArray();
+                res.json(result);
+            } catch (error) {
+                console.error("Error fetching purchases:", error);
+                res.status(500).json({ error: "Failed to fetch purchased recipes" });
+            }
+        });
+
         // Update recipe by ID
         app.put('/recipes/:id', middleware,
             async (req, res) => {
@@ -296,18 +346,29 @@ async function run() {
                     try {
                         const { payload } = await jwtVerify(token, JWKS);
                         const userId = payload.id || payload.sub || payload.uid;
+                        const userEmail = payload.email || "";
 
-                        if (userId) {
-                            if (recipe.likedBy && recipe.likedBy.includes(userId)) {
+                        if (userId || userEmail) {
+                            if (userId && recipe.likedBy && recipe.likedBy.includes(userId)) {
                                 hasLiked = true;
                             }
 
                             const favoritesCollection = db.collection("favorites");
-                            const fav = await favoritesCollection.findOne({ userId, recipeId });
+                            const fav = await favoritesCollection.findOne({
+                                $or: [
+                                    ...(userId ? [{ userId, recipeId }] : []),
+                                    ...(userEmail ? [{ userEmail, recipeId }] : [])
+                                ]
+                            });
                             if (fav) isFavorite = true;
 
                             const purchasesCollection = db.collection("purchases");
-                            const pur = await purchasesCollection.findOne({ userId, recipeId });
+                            const pur = await purchasesCollection.findOne({
+                                $or: [
+                                    ...(userId ? [{ userId, recipeId }] : []),
+                                    ...(userEmail ? [{ userEmail, recipeId }] : [])
+                                ]
+                            });
                             if (pur) hasPurchased = true;
                         }
                     } catch (e) {
@@ -395,6 +456,7 @@ async function run() {
                 } else {
                     await favoritesCollection.insertOne({
                         userId,
+                        userEmail: req.user.email || "",
                         recipeId,
                         recipeName: recipe.recipeName,
                         recipeImage: recipe.recipeImage,
@@ -560,31 +622,7 @@ async function run() {
             }
         });
 
-        // Get user's favorites
-        app.get('/recipes/favorites', middleware, async (req, res) => {
-            try {
-                const userId = req.user.id || req.user.sub || req.user.uid || "";
-                const favoritesCollection = db.collection("favorites");
-                const result = await favoritesCollection.find({ userId }).toArray();
-                res.json(result);
-            } catch (error) {
-                console.error("Error fetching favorites:", error);
-                res.status(500).json({ error: "Failed to fetch favorite recipes" });
-            }
-        });
-
-        // Get user's purchased recipes
-        app.get('/recipes/purchased', middleware, async (req, res) => {
-            try {
-                const userId = req.user.id || req.user.sub || req.user.uid || "";
-                const purchasesCollection = db.collection("purchases");
-                const result = await purchasesCollection.find({ userId }).toArray();
-                res.json(result);
-            } catch (error) {
-                console.error("Error fetching purchases:", error);
-                res.status(500).json({ error: "Failed to fetch purchased recipes" });
-            }
-        });
+        // Removed duplicates and moved up
 
         // await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
