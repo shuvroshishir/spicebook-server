@@ -42,11 +42,13 @@ const middleware = async (req, res, next) => {
     // receiving token from client side
     const authHeader = req?.headers.authorization;
     if (!authHeader) {
+        console.log("[Middleware] No Authorization header provided");
         return res.status(401).json({ message: "Unauthorized" });
     }
 
     const token = authHeader?.split(" ")[1];
-    if (!token) {
+    if (!token || token === "null" || token === "undefined") {
+        console.log("[Middleware] Token is missing, null, or undefined");
         return res.status(401).json({ message: "Unauthorized" });
     }
 
@@ -59,6 +61,7 @@ const middleware = async (req, res, next) => {
         next();
 
     } catch (error) {
+        console.error("[Middleware] Token verification failed:", error.message);
         return res.status(403).json({ message: "Forbidden" });
     }
 };
@@ -70,249 +73,34 @@ async function run() {
         // await client.connect();
 
         const db = client.db(process.env.MONGO_DB_NAME);
-        const petsCollection = db.collection("pets");
-        const adoptionsCollection = db.collection("adoptions");
-
-
-        // Pets collection
-        app.get("/pets", async (req, res) => {
-
-            const { search, species, sort } = req.query;
-
-            const query = {};
-
-            // Search by pet name
-            if (search) {
-                query.petName = {
-                    $regex: search,
-                    $options: "i",
-                };
-            }
-
-            // Filter by species
-            if (species) {
-                query.species = {
-                    $in: [species],
-                };
-            }
-
-            // Sorting
-            let sortOption = {};
-
-            if (sort === "LowToHigh") {
-                sortOption = {
-                    adoptionFee: 1,
-                };
-            }
-
-            else if (sort === "HighToLow") {
-                sortOption = {
-                    adoptionFee: -1,
-                };
-            }
-
-            const result = await petsCollection
-                .find(query)
-                .sort(sortOption)
-                .toArray();
-
-            res.json(result);
-        });
+        const recipesCollection = db.collection("recipes");
 
 
 
-        app.get('/pets/:id', middleware,
+        // Add recipe endpoint
+        app.post('/recipes', middleware,
             async (req, res) => {
-                const { id } = req.params;
+                try {
+                    const recipeData = req.body;
 
-                const result = await petsCollection.findOne({ _id: new ObjectId(id) });
-                res.json(result);
-            }
-        );
+                    console.log("[POST /recipes] User payload:", req.user);
 
+                    // Attach author information and metadata
+                    recipeData.authorId = req.user.id || req.user.sub || req.user.uid || "";
+                    recipeData.authorName = req.user.name || "";
+                    recipeData.authorEmail = req.user.email || "";
+                    recipeData.likesCount = 0;
+                    recipeData.isFeatured = false;
+                    recipeData.status = "pending";
+                    recipeData.createdAt = new Date();
+                    recipeData.updatedAt = new Date();
 
-        // my listings
-        app.get('/my-listings', middleware,
-            async (req, res) => {
-                const email = req.user.email;
-
-                const result = await petsCollection.find({ ownerEmail: email }).toArray();
-                res.json(result);
-            }
-        );
-
-
-        app.post('/pets', middleware,
-            async (req, res) => {
-                const petData = req.body;
-
-                const result = await petsCollection.insertOne(petData);
-                res.json(result);
-            }
-        );
-
-        app.patch('/pets/:id', middleware,
-            async (req, res) => {
-                const { id } = req.params;
-                const updatedData = req.body;
-
-                const result = await petsCollection.updateOne(
-                    { _id: new ObjectId(id) },  //detect - jeta update korbo
-                    { $set: updatedData }  //notun data 
-                );
-                res.json(result);
-            }
-        );
-
-        app.delete('/pets/:id', middleware,
-            async (req, res) => {
-                const { id } = req.params;
-
-                const result = await petsCollection.deleteOne({ _id: new ObjectId(id) });
-                res.json(result);
-            }
-        );
-
-
-
-
-        // Adoptions Collection ---------------->
-        app.get('/adoptions', middleware,
-            async (req, res) => {
-                const result = await adoptionsCollection.find({}).toArray();
-                res.json(result);
-            }
-        );
-
-        // pet's all requests
-        app.get("/adoptions/pet/:petId", middleware,
-            async (req, res) => {
-                const petId = req.params.petId;
-
-                const requests = await adoptionsCollection.find({ petId }).toArray();
-                res.json(requests);
-            }
-        );
-
-
-        // my requests
-        app.get('/my-requests', middleware,
-            async (req, res) => {
-                const email = req.user.email;
-
-                const result = await adoptionsCollection.find({ adopterEmail: email }).toArray();
-                res.json(result);
-            }
-        );
-
-        // is adoption request already submit
-        app.get("/adoptions/existing",
-            async (req, res) => {
-                const { petId, email } = req.query;
-
-                const existingRequest = await adoptionsCollection.findOne({
-                    petId,
-                    adopterEmail: email,
-                });
-
-                res.json(existingRequest);
-            }
-        );
-
-        app.post('/adoptions', middleware,
-            async (req, res) => {
-                const adoptionData = req.body;
-
-                const result = await adoptionsCollection.insertOne(adoptionData);
-                res.json(result);
-            }
-        );
-
-        app.delete('/adoptions/:id', middleware,
-            async (req, res) => {
-                const { id } = req.params;
-
-                const result = await adoptionsCollection.deleteOne({ _id: new ObjectId(id) });
-                res.json(result);
-            }
-        );
-
-
-
-
-
-        // request approve
-        app.patch("/adoptions/approve/:id", middleware,
-            async (req, res) => {
-
-                const id = req.params.id;
-
-                // find selected request person
-                const adoption = await adoptionsCollection.findOne({
-                    _id: new ObjectId(id),
-                });
-
-                // update status = approve 
-                await adoptionsCollection.updateOne(
-                    { _id: new ObjectId(id), },
-                    {
-                        $set: {
-                            status: "approved",
-                        },
-                    }
-                );
-
-                // reject other requests
-                await adoptionsCollection.updateMany(
-                    {
-                        petId: adoption.petId,
-
-                        _id: {
-                            $ne: new ObjectId(id),
-                        },
-                    },
-                    {
-                        $set: {
-                            status: "rejected",
-                        },
-                    }
-                );
-
-                // mark pet adopted
-                await petsCollection.updateOne(
-                    { _id: new ObjectId(adoption.petId), },
-                    {
-                        $set: {
-                            adoptionStatus:
-                                "adopted",
-                        },
-                    }
-                );
-
-                res.json({
-                    success: true,
-                });
-            }
-        );
-
-
-        // request reject
-        app.patch("/adoptions/reject/:id", middleware,
-            async (req, res) => {
-
-                const id = req.params.id;
-
-                const result =
-                    await adoptionsCollection.updateOne(
-                        { _id: new ObjectId(id), },
-                        {
-                            $set: {
-                                status: "rejected",
-                            },
-                        }
-                    );
-
-                res.json(result);
+                    const result = await recipesCollection.insertOne(recipeData);
+                    res.status(201).json(result);
+                } catch (error) {
+                    console.error("Error creating recipe:", error);
+                    res.status(500).json({ error: "Failed to create recipe" });
+                }
             }
         );
 
