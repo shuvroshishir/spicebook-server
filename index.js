@@ -121,6 +121,39 @@ async function run() {
             }
         });
 
+        // Public endpoint to get all recipes with pagination and category filtering
+        app.get('/recipes', async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 9;
+                const skip = (page - 1) * limit;
+
+                let query = {};
+                if (req.query.categories) {
+                    const categoriesList = req.query.categories.split(",").filter(Boolean);
+                    if (categoriesList.length > 0) {
+                        query.category = { $in: categoriesList };
+                    }
+                }
+
+                const total = await recipesCollection.countDocuments(query);
+                const recipes = await recipesCollection.find(query)
+                    .skip(skip)
+                    .limit(limit)
+                    .toArray();
+
+                res.json({
+                    recipes,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                    currentPage: page
+                });
+            } catch (error) {
+                console.error("Error fetching recipes:", error);
+                res.status(500).json({ error: "Failed to fetch recipes" });
+            }
+        });
+
         // Add recipe endpoint
         app.post('/recipes', middleware,
             async (req, res) => {
