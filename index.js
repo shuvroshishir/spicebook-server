@@ -75,7 +75,7 @@ async function run() {
         const db = client.db(process.env.MONGO_DB_NAME);
         const recipesCollection = db.collection("recipes");
         const favoritesCollection = db.collection("favorites");
-
+        const reportsCollection = db.collection("reports");
 
         // Public endpoint to get featured recipes with pagination
         app.get('/recipes/featured', async (req, res) => {
@@ -162,10 +162,41 @@ async function run() {
 
                     console.log("[POST /recipes] User payload:", req.user);
 
+                    const email = req.user.email || "";
+                    const userId = req.user.id || req.user.sub || req.user.uid || "";
+
+                    // Find user in database to check isPremium status
+                    const userCollection = db.collection("user");
+                    const queryConditions = [];
+                    if (userId) {
+                        queryConditions.push({ id: userId });
+                        try {
+                            queryConditions.push({ _id: new ObjectId(userId) });
+                        } catch(e) {}
+                    }
+                    if (email) {
+                        queryConditions.push({ email });
+                    }
+
+                    const userDoc = await userCollection.findOne({ $or: queryConditions });
+                    const isPremium = userDoc?.isPremium === true;
+
+                    if (!isPremium) {
+                        // Count user's existing recipes
+                        const count = await recipesCollection.countDocuments({ authorEmail: email });
+                        if (count >= 2) {
+                            return res.status(403).json({ 
+                                error: "Recipe limit reached", 
+                                message: "Standard accounts are limited to 2 recipes. Please upgrade to premium for unlimited uploads." 
+                            });
+                        }
+                    }
+
                     // Attach author information and metadata
-                    recipeData.authorId = req.user.id || req.user.sub || req.user.uid || "";
+                    recipeData.authorId = userId;
                     recipeData.authorName = req.user.name || "";
-                    recipeData.authorEmail = req.user.email || "";
+                    recipeData.authorEmail = email;
+                    recipeData.isAuthorPremium = isPremium;
                     recipeData.likesCount = 0;
                     recipeData.isFeatured = false;
                     recipeData.status = "pending";
@@ -497,14 +528,15 @@ async function run() {
                     return res.status(404).json({ error: "Recipe not found" });
                 }
 
-                const reportsCollection = db.collection("reports");
+
                 await reportsCollection.insertOne({
-                    userId,
-                    userName,
-                    userEmail,
                     recipeId,
                     recipeName: recipe.recipeName,
                     recipeImage: recipe.recipeImage,
+                    userId,
+                    userName,
+                    reporterEmail: userEmail,
+                    userEmail,
                     reason,
                     details: details || "",
                     status: "pending",
@@ -535,7 +567,16 @@ async function run() {
                 }
 
                 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key_spicebook");
-                const priceInCents = 499; // Flat $4.99
+                const priceInCents = recipe.price && recipe.price > 0 ? Math.round(recipe.price * 100) : 499;
+
+                // Validate and sanitize image URL for Stripe checkout validation
+                const stripeImages = [];
+                if (recipe.recipeImage && (recipe.recipeImage.startsWith("http://") || recipe.recipeImage.startsWith("https://"))) {
+                    stripeImages.push(recipe.recipeImage);
+                } else {
+                    // Fallback to a default high-quality food placeholder image
+                    stripeImages.push("https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=600&auto=format&fit=crop");
+                }
 
                 const session = await stripe.checkout.sessions.create({
                     payment_method_types: ['card'],
@@ -544,7 +585,7 @@ async function run() {
                             currency: 'usd',
                             product_data: {
                                 name: recipe.recipeName,
-                                images: [recipe.recipeImage],
+                                images: stripeImages,
                                 description: `Unlock recipe: ${recipe.recipeName}`,
                             },
                             unit_amount: priceInCents,
@@ -574,6 +615,7 @@ async function run() {
             try {
                 const { sessionId } = req.body;
                 const userId = req.user.id || req.user.sub || req.user.uid || "";
+                const userEmail = req.user.email || "";
 
                 if (!sessionId) {
                     return res.status(400).json({ error: "Session ID is required" });
@@ -612,6 +654,18 @@ async function run() {
                         purchasedAt: new Date()
                     });
 
+                    // Save transaction to payments collection
+                    const paymentsCollection = db.collection("payments");
+                    await paymentsCollection.insertOne({
+                        userEmail,
+                        userId,
+                        amount: session.amount_total / 100,
+                        recipeId,
+                        transactionId: sessionId,
+                        paymentStatus: "paid",
+                        paidAt: new Date()
+                    });
+
                     res.json({ success: true, message: "Purchase verified successfully" });
                 } else {
                     res.status(400).json({ error: "Payment not completed" });
@@ -619,6 +673,140 @@ async function run() {
             } catch (error) {
                 console.error("Error verifying purchase:", error);
                 res.status(500).json({ error: "Failed to verify purchase" });
+            }
+        });
+
+        // Get user premium status from database
+        app.get('/users/status', middleware, async (req, res) => {
+            try {
+                const email = req.user.email || "";
+                const userId = req.user.id || req.user.sub || req.user.uid || "";
+
+                const userCollection = db.collection("user");
+                const queryConditions = [];
+                if (userId) {
+                    queryConditions.push({ id: userId });
+                    try {
+                        queryConditions.push({ _id: new ObjectId(userId) });
+                    } catch(e) {}
+                }
+                if (email) {
+                    queryConditions.push({ email });
+                }
+
+                const userDoc = await userCollection.findOne({ $or: queryConditions });
+                res.json({ isPremium: userDoc?.isPremium === true });
+            } catch (error) {
+                console.error("Error fetching user status:", error);
+                res.status(500).json({ error: "Failed to fetch user status" });
+            }
+        });
+
+        // Create Stripe Checkout Session for Premium membership upgrade
+        app.post('/create-checkout-session/premium', middleware, async (req, res) => {
+            try {
+                const userId = req.user.id || req.user.sub || req.user.uid || "";
+                const userEmail = req.user.email || "";
+                const { redirectPath } = req.body;
+
+                const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key_spicebook");
+                const priceInCents = 999; // Flat $9.99 for lifetime premium
+
+                const session = await stripe.checkout.sessions.create({
+                    payment_method_types: ['card'],
+                    line_items: [{
+                        price_data: {
+                            currency: 'usd',
+                            product_data: {
+                                name: "SpiceBook Premium Membership",
+                                description: "Unlock lifetime access to all premium recipes, guides, and priority badges.",
+                            },
+                            unit_amount: priceInCents,
+                        },
+                        quantity: 1,
+                    }],
+                    mode: 'payment',
+                    success_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/dashboard/payment-success?upgrade_success=true&session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}${redirectPath || '/dashboard/profile'}`,
+                    customer_email: userEmail,
+                    metadata: {
+                        userId,
+                        userEmail,
+                        type: "premium_upgrade"
+                    }
+                });
+
+                res.json({ id: session.id, url: session.url });
+            } catch (error) {
+                console.error("Error creating premium checkout session:", error);
+                res.status(500).json({ error: "Failed to create checkout session" });
+            }
+        });
+
+        // Verify Stripe Premium membership upgrade session
+        app.post('/users/verify-premium-upgrade', middleware, async (req, res) => {
+            try {
+                const { sessionId } = req.body;
+                const userId = req.user.id || req.user.sub || req.user.uid || "";
+                const userEmail = req.user.email || "";
+
+                if (!sessionId) {
+                    return res.status(400).json({ error: "Session ID is required" });
+                }
+
+                const paymentsCollection = db.collection("payments");
+                const existing = await paymentsCollection.findOne({ transactionId: sessionId });
+                if (existing) {
+                    return res.json({ success: true, message: "Upgrade already processed" });
+                }
+
+                const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key_spicebook");
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+                if (session.payment_status === "paid") {
+                    // Update user.isPremium = true in MongoDB Better Auth user collection
+                    const userCollection = db.collection("user");
+                    
+                    const queryConditions = [];
+                    if (userId) {
+                        queryConditions.push({ id: userId });
+                        try {
+                            queryConditions.push({ _id: new ObjectId(userId) });
+                        } catch(e) {}
+                    }
+                    if (userEmail) {
+                        queryConditions.push({ email: userEmail });
+                    }
+
+                    await userCollection.updateOne(
+                        { $or: queryConditions },
+                        { $set: { isPremium: true, updatedAt: new Date() } }
+                    );
+
+                    // Update all recipes by this author to reflect their premium status
+                    await recipesCollection.updateMany(
+                        { authorEmail: userEmail },
+                        { $set: { isAuthorPremium: true } }
+                    );
+
+                    // Insert payment record matching the requested database schema
+                    await paymentsCollection.insertOne({
+                        userEmail,
+                        userId,
+                        amount: session.amount_total / 100,
+                        recipeId: null,
+                        transactionId: sessionId,
+                        paymentStatus: "paid",
+                        paidAt: new Date()
+                    });
+
+                    res.json({ success: true, message: "Welcome to Premium Pro!" });
+                } else {
+                    res.status(400).json({ error: "Payment not completed" });
+                }
+            } catch (error) {
+                console.error("Error verifying premium upgrade:", error);
+                res.status(500).json({ error: "Failed to verify premium upgrade" });
             }
         });
 
