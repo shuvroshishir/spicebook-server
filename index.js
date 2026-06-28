@@ -104,6 +104,23 @@ async function run() {
             }
         });
 
+        // Public endpoint to get popular recipes (most liked)
+        app.get('/recipes/popular', async (req, res) => {
+            try {
+                const limit = parseInt(req.query.limit) || 9;
+                
+                const recipes = await recipesCollection.find({})
+                    .sort({ likesCount: -1 })
+                    .limit(limit)
+                    .toArray();
+
+                res.json(recipes);
+            } catch (error) {
+                console.error("Error fetching popular recipes:", error);
+                res.status(500).json({ error: "Failed to fetch popular recipes" });
+            }
+        });
+
         // Add recipe endpoint
         app.post('/recipes', middleware,
             async (req, res) => {
