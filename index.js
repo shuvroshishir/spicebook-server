@@ -77,6 +77,33 @@ async function run() {
 
 
 
+        // Public endpoint to get featured recipes with pagination
+        app.get('/recipes/featured', async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 6;
+                const skip = (page - 1) * limit;
+
+                const query = { isFeatured: true };
+
+                const total = await recipesCollection.countDocuments(query);
+                const recipes = await recipesCollection.find(query)
+                    .skip(skip)
+                    .limit(limit)
+                    .toArray();
+
+                res.json({
+                    recipes,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                    currentPage: page
+                });
+            } catch (error) {
+                console.error("Error fetching featured recipes:", error);
+                res.status(500).json({ error: "Failed to fetch featured recipes" });
+            }
+        });
+
         // Add recipe endpoint
         app.post('/recipes', middleware,
             async (req, res) => {
@@ -100,6 +127,98 @@ async function run() {
                 } catch (error) {
                     console.error("Error creating recipe:", error);
                     res.status(500).json({ error: "Failed to create recipe" });
+                }
+            }
+        );
+
+        // Get user's own recipes
+        app.get('/recipes/my', middleware,
+            async (req, res) => {
+                try {
+                    const email = req.user.email;
+                    const result = await recipesCollection.find({ authorEmail: email }).toArray();
+                    res.json(result);
+                } catch (error) {
+                    console.error("Error fetching user recipes:", error);
+                    res.status(500).json({ error: "Failed to fetch recipes" });
+                }
+            }
+        );
+
+        // Support dashboard overview listing count
+        app.get('/my-listings', middleware,
+            async (req, res) => {
+                try {
+                    const email = req.user.email;
+                    const result = await recipesCollection.find({ authorEmail: email }).toArray();
+                    res.json(result);
+                } catch (error) {
+                    console.error("Error fetching my-listings:", error);
+                    res.status(500).json({ error: "Failed to fetch listings" });
+                }
+            }
+        );
+
+        // Update recipe by ID
+        app.put('/recipes/:id', middleware,
+            async (req, res) => {
+                try {
+                    const { id } = req.params;
+                    const updatedData = req.body;
+                    const email = req.user.email;
+
+                    // Verify ownership
+                    const recipe = await recipesCollection.findOne({ _id: new ObjectId(id) });
+                    if (!recipe) {
+                        return res.status(404).json({ message: "Recipe not found" });
+                    }
+                    if (recipe.authorEmail !== email) {
+                        return res.status(403).json({ message: "Forbidden: You do not own this recipe" });
+                    }
+
+                    // Prevent changing protected fields
+                    delete updatedData._id;
+                    delete updatedData.authorId;
+                    delete updatedData.authorEmail;
+                    delete updatedData.authorName;
+                    delete updatedData.createdAt;
+
+                    updatedData.updatedAt = new Date();
+
+                    const result = await recipesCollection.updateOne(
+                        { _id: new ObjectId(id) },
+                        { $set: updatedData }
+                    );
+
+                    res.json(result);
+                } catch (error) {
+                    console.error("Error updating recipe:", error);
+                    res.status(500).json({ error: "Failed to update recipe" });
+                }
+            }
+        );
+
+        // Delete recipe by ID
+        app.delete('/recipes/:id', middleware,
+            async (req, res) => {
+                try {
+                    const { id } = req.params;
+                    const email = req.user.email;
+
+                    // Verify ownership
+                    const recipe = await recipesCollection.findOne({ _id: new ObjectId(id) });
+                    if (!recipe) {
+                        return res.status(404).json({ message: "Recipe not found" });
+                    }
+                    if (recipe.authorEmail !== email) {
+                        return res.status(403).json({ message: "Forbidden: You do not own this recipe" });
+                    }
+
+                    const result = await recipesCollection.deleteOne({ _id: new ObjectId(id) });
+                    res.json(result);
+                } catch (error) {
+                    console.error("Error deleting recipe:", error);
+                    res.status(500).json({ error: "Failed to delete recipe" });
                 }
             }
         );
