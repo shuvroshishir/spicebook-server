@@ -1051,7 +1051,91 @@ async function run() {
             }
         });
 
+        // 9. Recipe Reports - Get all reports with recipe details
+        app.get('/admin/reports', adminMiddleware, async (req, res) => {
+            try {
+                const reportsCollection = db.collection("reports");
+                const reports = await reportsCollection.aggregate([
+                    {
+                        $addFields: {
+                            recipeObjectId: {
+                                $cond: {
+                                    if: { $eq: [{ $type: "$recipeId" }, "string"] },
+                                    then: { $toObjectId: "$recipeId" },
+                                    else: "$recipeId"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "recipes",
+                            localField: "recipeObjectId",
+                            foreignField: "_id",
+                            as: "recipeDetails"
+                        }
+                    },
+                    {
+                        $unwind: {
+                            path: "$recipeDetails",
+                            preserveNullAndEmptyArrays: true
+                        }
+                    },
+                    {
+                        $project: {
+                            recipeObjectId: 0
+                        }
+                    }
+                ]).toArray();
+                res.json(reports);
+            } catch (error) {
+                console.error("Error fetching reports:", error);
+                res.status(500).json({ error: "Failed to fetch reports" });
+            }
+        });
 
+        // 10. Recipe Reports - Dismiss report
+        app.patch('/admin/reports/:id/dismiss', adminMiddleware, async (req, res) => {
+            try {
+                const reportId = req.params.id;
+                const reportsCollection = db.collection("reports");
+                await reportsCollection.updateOne(
+                    { _id: new ObjectId(reportId) },
+                    { $set: { status: "dismissed" } }
+                );
+                res.json({ success: true, message: "Report dismissed successfully" });
+            } catch (error) {
+                console.error("Error dismissing report:", error);
+                res.status(500).json({ error: "Failed to dismiss report" });
+            }
+        });
+
+        // 11. Transactions - Get all payments with server-side pagination
+        app.get('/admin/transactions', adminMiddleware, async (req, res) => {
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 10;
+                const skip = (page - 1) * limit;
+
+                const paymentsCollection = db.collection("payments");
+                const total = await paymentsCollection.countDocuments();
+                const payments = await paymentsCollection.find()
+                    .sort({ paidAt: -1 })
+                    .skip(skip)
+                    .limit(limit)
+                    .toArray();
+
+                res.json({
+                    data: payments,
+                    total,
+                    page,
+                    totalPages: Math.ceil(total / limit)
+                });
+            } catch (error) {
+                console.error("Error fetching admin transactions:", error);
+                res.status(500).json({ error: "Failed to fetch transactions" });
+            }
+        });
 
         // await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
